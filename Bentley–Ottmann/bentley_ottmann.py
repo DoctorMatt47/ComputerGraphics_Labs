@@ -1,47 +1,113 @@
-import logging
+from enum import Enum
+from functools import total_ordering
 from heapq import heappush, heapify, heappop
 
-from bst import AVLTree, Node
-from models import *
+from shapely.geometry import LineString
+from shapely.geometry import Point as SPoint
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from tree import AVLTree, Node
 
 
-class SweepLine:
-    def __init__(self):
+class PointType(Enum):
+    nothing = 0
+    cross = 1
+    start = 2
+    end = 3
+
+
+@total_ordering
+class Point(SPoint):
+    segment_relation = PointType.nothing
+    segment = None
+
+    def set_segment(self, s, is_start=True):
+        self.segment = s
+        if is_start:
+            self.segment_relation = PointType.start
+        else:
+            self.segment_relation = PointType.end
+
+    def set_cross_segment(self, s1, s2):
+        if s1 > s2:
+            s1, s2 = s2, s1
+        self.segment = s1
+        self.cross_segment = s2
+        self.segment_relation = PointType.cross
+
+    def __gt__(self, other):
+        if self.x > other.x:
+            return True
+        elif self.x == other.x and self.y > other.y:
+            return True
+        return False
+
+    def __eq__(self, other):
+        if self.x == other.x and self.y == other.y:
+            return True
+        return False
+
+    def __str__(self):
+        return str(self.x) + "," + str(self.y)
+
+    def __repr__(self):
+        return self.__str__()
+
+
+@total_ordering
+class Segment(LineString):
+
+    def __init__(self, coordinates=None):
+        super().__init__(coordinates)
+        self.sx = None
+
+    def __gt__(self, other):
+        max_x = max(self.sx, other.sx)
+        self_p = self.find_y(max_x)
+        other_p = other.find_y(max_x)
+        if self_p.almost_equals(other_p):
+            max_x = max(self.coords[0][0], other.coords[0][0])
+            self_p = self.find_y(max_x)
+            other_p = other.find_y(max_x)
+        return self_p.y > other_p.y
+
+    def __eq__(self, other):
+        return self.almost_equals(other)
+
+    def __str__(self):
+        return "[" + str(self.coords[0]) + "," + str(self.coords[1]) + "]"
+
+    def __repr__(self):
+        return self.__str__()
+
+    def find_y(self, x):
+        h_line = LineString([(x, 0), (x, max(self.xy[1]))])
+        intersection = self.intersection(h_line)
+        if isinstance(intersection, LineString):
+            intersection = Point(intersection.coords[0])
+        return intersection
+
+
+class BentleyOttmann:
+
+    def __init__(self, xy_pairs):
         self.result = []
         self.event_points = []
-
-    def handle_event_point(self, ep):
-        raise NotImplementedError
-
-    def run(self):
-        logger.info("sweep line started")
-        while len(self.event_points):
-            logger.info(f" Q:\n{self.event_points}")
-            self.handle_event_point(heappop(self.event_points))
-        return self.result
-
-
-class BentleyOttmann(SweepLine):
-
-    def __init__(self, segment_cordinate_list):
-        """
-        :param segment_cordinate_list: list of cordiantes like [ ((x11,y11), (x12,y12)), ... ]
-        """
-        super().__init__()
         self.tree = AVLTree()
-        for segment_cor in segment_cordinate_list:
-            start_point = Point(segment_cor[0])
-            end_point = Point(segment_cor[1])
+        for xy_pair in xy_pairs:
+            start_point = Point(xy_pair[0])
+            end_point = Point(xy_pair[1])
             segment = Segment([start_point, end_point])
-            start_point.set_segment(segment, is_start_point=True)
-            end_point.set_segment(segment, is_start_point=False)
+            start_point.set_segment(segment, True)
+            end_point.set_segment(segment, False)
             heappush(self.event_points, start_point)
             heappush(self.event_points, end_point)
 
-    def add_intersect(self, seg1, seg2, sx):
+    def find_intersections(self):
+        while len(self.event_points):
+            self.process_point(heappop(self.event_points))
+        return self.result
+
+    def try_add_intersect(self, seg1, seg2, sx):
         if seg1 is None or seg2 is None:
             return
         if isinstance(seg1, Node):
@@ -52,14 +118,12 @@ class BentleyOttmann(SweepLine):
             cross_point = Point(seg1.intersection(seg2))
             cross_point.set_cross_segment(seg1, seg2)
             if cross_point.x <= sx:
-                logger.info(f"add ignored {cross_point}")
                 return None
             heappush(self.event_points, cross_point)
-            logger.info(f"add {cross_point}")
             return cross_point
         return None
 
-    def remove_intersect(self, seg1, seg2, sx):
+    def try_remove_intersect(self, seg1, seg2, sx):
         if seg1 is None or seg2 is None:
             return
         if isinstance(seg1, Node):
@@ -67,47 +131,50 @@ class BentleyOttmann(SweepLine):
         if isinstance(seg2, Node):
             seg2 = seg2.key
         if seg1.intersects(seg2):
-            # by using heap, this takes: O(n)
             cross_point = seg1.intersection(seg2)
             if cross_point.x <= sx:
-                logger.info(f"remove ignored {cross_point}")
                 return None
-            logger.info(f"remove {cross_point}")
             try:
                 self.event_points.remove(cross_point)
                 return cross_point
             except Exception as e:
-                logger.info(f"NOT FOUND")
+                pass
             heapify(self.event_points)
         return None
 
-    def handle_event_point(self, p):
-        logger.info("handling p: " + str(p) + " with relation " + str(p.segment_relation))
-        logger.info(" T:\n" + str(self.tree))
+    def process_point(self, p):
         self.tree.sweep_line_x = p.x
-        if p.segment_relation == Relation.start_endpoint:
-            segment_node = self.tree.insert(p.segment)
-            left_segment_node = self.tree.get_left(segment_node)
-            right_segment_node = self.tree.get_right(segment_node)
-            self.remove_intersect(left_segment_node, right_segment_node, p.x)
-            self.add_intersect(p.segment, left_segment_node, p.x)
-            self.add_intersect(p.segment, right_segment_node, p.x)
+        if p.segment_relation == PointType.start:
+            self.process_start_point(p)
+        elif p.segment_relation == PointType.end:
+            self.process_end_point(p)
+        elif p.segment_relation == PointType.cross:
+            self.process_cross_point(p)
 
-        elif p.segment_relation == Relation.end_endpoint:
-            segment_node = self.tree.find(p.segment)
-            left_segment_node = self.tree.get_left(segment_node)
-            right_segment_node = self.tree.get_right(segment_node)
-            self.tree.remove_by_node(segment_node)
-            self.add_intersect(left_segment_node, right_segment_node, p.x)
+    def process_start_point(self, p):
+        segment_node = self.tree.insert(p.segment)
+        below_segment = self.tree.get_left(segment_node)
+        above_segment = self.tree.get_right(segment_node)
+        self.try_remove_intersect(below_segment, above_segment, p.x)
+        self.try_add_intersect(p.segment, below_segment, p.x)
+        self.try_add_intersect(p.segment, above_segment, p.x)
 
-        elif p.segment_relation == Relation.cross_point:
-            self.result.append((p.x, p.y))
-            segment1_node = self.tree.find(p.segment)
-            segment2_node = self.tree.find(p.cross_segment)
-            left_segment_node = self.tree.get_left(segment1_node)
-            right_segment_node = self.tree.get_right(segment2_node)
-            self.remove_intersect(right_segment_node, segment2_node, p.x)
-            self.remove_intersect(left_segment_node, segment1_node, p.x)
-            self.add_intersect(right_segment_node, segment1_node, p.x)
-            self.add_intersect(left_segment_node, segment2_node, p.x)
-            segment1_node.key, segment2_node.key = segment2_node.key, segment1_node.key
+    def process_cross_point(self, p):
+        self.result.append((p.x, p.y))
+        segment1_node = self.tree.find(p.segment)
+        segment2_node = self.tree.find(p.cross_segment)
+        below_segment = self.tree.get_left(segment1_node)
+        above_segment = self.tree.get_right(segment2_node)
+        self.try_remove_intersect(above_segment, segment2_node, p.x)
+        self.try_remove_intersect(below_segment, segment1_node, p.x)
+        self.try_add_intersect(above_segment, segment1_node, p.x)
+        self.try_add_intersect(below_segment, segment2_node, p.x)
+        segment1_node.key, segment2_node.key = segment2_node.key, segment1_node.key
+
+    def process_end_point(self, p):
+        segment_node = self.tree.find(p.segment)
+        below_segment = self.tree.get_left(segment_node)
+        above_segment = self.tree.get_right(segment_node)
+        self.tree.remove_by_node(segment_node)
+        self.try_add_intersect(below_segment, above_segment, p.x)
+
