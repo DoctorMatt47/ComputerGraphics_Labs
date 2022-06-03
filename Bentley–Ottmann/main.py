@@ -1,40 +1,55 @@
 import random
 
 from bentley_ottmann import BentleyOttmann
-from visualizer import Visualizer
-
-MAX_X = 1000
-MAX_Y = 1000
+import matplotlib.pyplot as plt
 
 
-def generate_point():
-    return random.randint(0, MAX_X), random.randint(0, MAX_Y)
+class Plot:
+    def __init__(self):
+        self.segments = []
+        self.points = []
+
+    def add_segment(self, p1, p2):
+        self.segments.append([p1[0], p2[0]])
+        self.segments.append([p1[1], p2[1]])
+
+    def add_point(self, p):
+        self.points.append(p)
+
+    def show(self):
+        plt.plot(*self.segments)
+        plt.plot([p[0] for p in self.points], [p[1] for p in self.points], '.')
+        plt.show()
 
 
-def generate_segments(n):
+def generate_point(max_xy):
+    return random.randint(0, max_xy), random.randint(0, max_xy)
+
+
+def segments_generator(n, max_xy):
     for _ in range(n):
-        s = generate_point()
-        e = generate_point()
-        if e[0] < s[0]:
-            e, s = s, e
-        elif e[0] == s[0] and e[1] < s[1]:
-            e, s = s, e
-        yield s, e
+        p1 = generate_point(max_xy)
+        p2 = generate_point(max_xy)
+        if p2[0] < p1[0]:
+            p2, p1 = p1, p2
+        elif p2[0] == p1[0] and p2[1] < p1[1]:
+            p2, p1 = p1, p2
+        yield p1, p2
 
 
-def random_segment_test():
-    v = Visualizer()
-    segments = list(generate_segments(5))
-    bo = BentleyOttmann(segments)
+def main():
+    v = Plot()
+    segments = list(segments_generator(5, 1000))
     print(segments)
     for s in segments:
         v.add_segment(s[0], s[1])
-    # v.show()
-    bo.run()
-    for p in bo.result:
+
+    bo = BentleyOttmann(segments)
+    intersections = bo.find_intersections()
+    for p in intersections:
         v.add_point(p)
     v.show()
 
 
 if __name__ == "__main__":
-    random_segment_test()
+    main()
